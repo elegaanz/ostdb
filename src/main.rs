@@ -1,6 +1,8 @@
-use nominatim::NominatimError;
+mod parser;
+
 use std::env;
 
+use crate::parser::BarsFile;
 use rand::seq::IteratorRandom;
 use serenity::{
     async_trait,
@@ -8,27 +10,15 @@ use serenity::{
     prelude::*,
 };
 
-struct Bar {
-    name: &'static str,
-    location: String,
+/// A bar ready to be shown by the Discord bot
+struct BakedBar {
+    name: String,
+    osm_url: String,
 }
 
-impl Bar {
-    pub async fn find_by_name(name: &'static str) -> Result<Self, NominatimError> {
-        let location = nominatim::NominatimClient {
-            identification: nominatim::IdentificationMethod::UserAgent("ostdb".to_owned()),
-        }
-        .search(format!("{} grenoble", name))
-        .await
-        .map(|x| format!("https://www.openstreetmap.org/node/{}", x.osm_id))?;
+struct Handler(Vec<BakedBar>);
 
-        Ok(Self { name, location })
-    }
-}
-
-struct Handler(Vec<Bar>);
-
-const BARS: &'static str = include_str!("../bars.txt");
+const BARS: &'static str = include_str!("../bars.toml");
 
 #[async_trait]
 impl EventHandler for Handler {
@@ -42,7 +32,7 @@ impl EventHandler for Handler {
 
             if let Err(why) = msg
                 .channel_id
-                .say(&ctx.http, format!("{} {}", bar.name, bar.location))
+                .say(&ctx.http, format!("{} {}", bar.name, bar.osm_url))
                 .await
             {
                 println!("Error sending message: {:?}", why);
@@ -57,18 +47,19 @@ impl EventHandler for Handler {
 
 #[tokio::main]
 async fn main() {
-    println!("building list of bars");
-    let mut bars = Vec::new();
-    for bar in BARS.lines() {
-        match Bar::find_by_name(bar).await {
-            Ok(bar) => bars.push(bar),
-            Err(err) => eprintln!("warn: bar {bar:?} wasn't found on Nominatim: {err}"),
-        }
-    }
-    assert!(bars.len() > 0, "the list of bars cannot be empty");
-    println!("done, we have {} bars in stock", bars.len());
-
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
+
+    let bars_file = toml::from_str::<BarsFile>(BARS).unwrap();
+    println!("we have {} bars in stock", bars_file.bars.len());
+
+    let bars = bars_file
+        .bars
+        .into_iter()
+        .map(|bar| BakedBar {
+            name: bar.name,
+            osm_url: bar.osm.to_string(),
+        })
+        .collect::<Vec<_>>();
 
     let mut client = Client::builder(&token)
         .event_handler(Handler(bars))
