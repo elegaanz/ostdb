@@ -1,3 +1,4 @@
+use nominatim::NominatimError;
 use std::env;
 
 use rand::seq::IteratorRandom;
@@ -7,7 +8,25 @@ use serenity::{
     prelude::*,
 };
 
-struct Handler;
+struct Bar {
+    name: &'static str,
+    location: String,
+}
+
+impl Bar {
+    pub async fn find_by_name(name: &'static str) -> Result<Self, NominatimError> {
+        let location = nominatim::NominatimClient {
+            identification: nominatim::IdentificationMethod::UserAgent("ostdb".to_owned()),
+        }
+        .search(format!("{} grenoble", name))
+        .await
+        .map(|x| format!("https://www.openstreetmap.org/node/{}", x.osm_id))?;
+
+        Ok(Self { name, location })
+    }
+}
+
+struct Handler(Vec<Bar>);
 
 const BARS: &'static str = include_str!("../bars.txt");
 
@@ -18,18 +37,12 @@ impl EventHandler for Handler {
         if text.starts_with("bar") && text.ends_with("?") {
             let bar = {
                 let mut rng = rand::thread_rng();
-                BARS.split("\n").choose(&mut rng).unwrap_or_default()
+                self.0.iter().choose(&mut rng).unwrap()
             };
-            let loc = nominatim::NominatimClient {
-                identification: nominatim::IdentificationMethod::UserAgent("ostdb".to_owned()),
-            }
-            .search(format!("{} grenoble", bar))
-            .await
-            .map(|x| format!("https://www.openstreetmap.org/node/{}", x.osm_id))
-            .unwrap_or("(introuvable)".to_owned());
+
             if let Err(why) = msg
                 .channel_id
-                .say(&ctx.http, format!("{} {}", bar, loc))
+                .say(&ctx.http, format!("{} {}", bar.name, bar.location))
                 .await
             {
                 println!("Error sending message: {:?}", why);
@@ -44,10 +57,21 @@ impl EventHandler for Handler {
 
 #[tokio::main]
 async fn main() {
+    println!("building list of bars");
+    let mut bars = Vec::new();
+    for bar in BARS.lines() {
+        match Bar::find_by_name(bar).await {
+            Ok(bar) => bars.push(bar),
+            Err(err) => eprintln!("warn: bar {bar:?} wasn't found on Nominatim: {err}"),
+        }
+    }
+    assert!(bars.len() > 0, "the list of bars cannot be empty");
+    println!("done, we have {} bars in stock", bars.len());
+
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
 
     let mut client = Client::builder(&token)
-        .event_handler(Handler)
+        .event_handler(Handler(bars))
         .await
         .expect("Err creating client");
 
